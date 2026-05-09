@@ -64,6 +64,13 @@ const OBSIDIAN_SCRIPTS = [
   window.__owFs.setVaultBase(VAULT_BASE);
   window.__owFs.setVaultId(VAULT_ID);
 
+  // Auto-trust community plugins in demo mode so the "Do you trust this
+  // vault?" modal doesn't block first-time visitors.
+  // Obsidian checks: localStorage.getItem("enable-plugin-" + appId)
+  if (VAULT_ID) {
+    localStorage.setItem('enable-plugin-' + VAULT_ID, 'true');
+  }
+
   // Mobile emulation: on small viewports, set the EmulateMobile flag so
   // Obsidian activates its mobile UI (170 CSS rules + JS behavior).
   // Obsidian reads this from localStorage before we can intervene, so it
