@@ -64,7 +64,15 @@ const OBSIDIAN_SCRIPTS = [
   window.__owFs.setVaultBase(VAULT_BASE);
   window.__owFs.setVaultId(VAULT_ID);
 
-
+  // Mobile emulation: on small viewports, set the EmulateMobile flag so
+  // Obsidian activates its mobile UI (170 CSS rules + JS behavior).
+  // Obsidian reads this from localStorage before we can intervene, so it
+  // must be set before app.js loads (which it is — boot.js runs first).
+  if (window.innerWidth < 600 || window.innerHeight < 600) {
+    localStorage.setItem('EmulateMobile', '1');
+  } else {
+    localStorage.removeItem('EmulateMobile');
+  }
 
   // Map module name -> shim object.
   const modules = {
@@ -329,27 +337,64 @@ const OBSIDIAN_SCRIPTS = [
   // sendSync() / statSync() are only called AFTER app.js starts running,
   // which is after this promise resolves — so the cache is always ready.
   if (VAULT_ID && location.pathname !== '/starter') {
-    fetch('/api/bootstrap?vault=' + encodeURIComponent(VAULT_ID) + '&full=1')
+    var statusEl = document.getElementById('ow-status');
+    var pollTimer = null;
+    var vaultParam = encodeURIComponent(VAULT_ID);
+
+    // Start polling /api/bootstrap/status after 2 seconds of waiting.
+    // Shows progress to the user during slow cold-start builds.
+    var pollDelay = setTimeout(function () {
+      pollTimer = setInterval(function () {
+        fetch('/api/bootstrap/status?vault=' + vaultParam)
+          .then(function (r) { return r.json(); })
+          .then(function (s) {
+            if (!statusEl || s.state === 'idle' || s.state === 'ready') return;
+            var text = s.label || '';
+            if (s.state === 'scanning' && s.dirs) {
+              text += ' (' + s.dirs + ' dirs, ' + (s.files || 0) + ' files)';
+            }
+            if (s.state === 'reading' && s.filesRead) {
+              text += ' (' + s.filesRead + '/' + (s.total || '?') + ')';
+            }
+            statusEl.textContent = text;
+          })
+          .catch(function () {});
+      }, 1000);
+    }, 2000);
+
+    function stopPolling() {
+      clearTimeout(pollDelay);
+      if (pollTimer) clearInterval(pollTimer);
+    }
+
+    fetch('/api/bootstrap?vault=' + vaultParam + '&full=1')
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
       })
       .then(function (data) {
-        const vault = data.electron && data.electron['vault'];
+        stopPolling();
+        var vault = data.electron && data.electron['vault'];
         if (!vault || !vault.id) {
           localStorage.removeItem('obsidian-web:lastVaultId');
           location.href = '/starter';
           return;
         }
         window.__owBootstrapCache = data;
+        if (statusEl) statusEl.textContent = 'Loading Obsidian...';
         console.log('[obsidian-web] bootstrap loaded: ' + Object.keys(data.fs).length + ' files pre-cached');
 
         // Inject Obsidian's scripts in order. async=false preserves execution
         // order while allowing parallel download.
+        var loaded = 0;
         for (var i = 0; i < OBSIDIAN_SCRIPTS.length; i++) {
           var s = document.createElement('script');
           s.src = OBSIDIAN_SCRIPTS[i];
           s.async = false;
+          s.onload = function () {
+            loaded++;
+            if (statusEl) statusEl.textContent = 'Loading Obsidian (' + loaded + '/' + OBSIDIAN_SCRIPTS.length + ')';
+          };
           document.head.appendChild(s);
         }
 
@@ -366,6 +411,7 @@ const OBSIDIAN_SCRIPTS = [
         }
       })
       .catch(function (err) {
+        stopPolling();
         console.warn('[obsidian-web] bootstrap failed:', err.message);
         localStorage.removeItem('obsidian-web:lastVaultId');
         location.href = '/starter';

@@ -10,8 +10,10 @@
       position: fixed;
       inset: 0;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
+      gap: 16px;
       background: var(--background-primary, #1e1e1e);
       z-index: 99999;
     }
@@ -23,6 +25,11 @@
       border-radius: 50%;
       animation: ow-spin 0.7s linear infinite;
     }
+    #ow-loading .ow-status {
+      color: rgba(255,255,255,0.5);
+      font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+      text-align: center;
+    }
     @keyframes ow-spin {
       to { transform: rotate(360deg); }
     }
@@ -32,7 +39,10 @@
 
   <!-- Loading overlay — removed by boot.js via MutationObserver once
        Obsidian's .workspace element appears. -->
-  <div id="ow-loading"><div class="ow-spinner"></div></div>
+  <div id="ow-loading">
+    <div class="ow-spinner"></div>
+    <div class="ow-status" id="ow-status"></div>
+  </div>
 
   <!-- 1. Shim libraries (define __ow* globals). Order matters only for
        sync-http: it must come before any shim that uses sync XHR.
