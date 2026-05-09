@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+  <title>Obsidian Web</title>
+  <link href="/obsidian/app.css" type="text/css" rel="stylesheet"/>
+  <style>
+    #ow-loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--background-primary, #1e1e1e);
+      z-index: 99999;
+    }
+    #ow-loading .ow-spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(255,255,255,0.12);
+      border-top-color: rgba(255,255,255,0.6);
+      border-radius: 50%;
+      animation: ow-spin 0.7s linear infinite;
+    }
+    @keyframes ow-spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body class="theme-dark">
+
+  <!-- Loading overlay — removed by boot.js via MutationObserver once
+       Obsidian's .workspace element appears. -->
+  <div id="ow-loading"><div class="ow-spinner"></div></div>
+
+  <!-- 1. Shim libraries (define __ow* globals). Order matters only for
+       sync-http: it must come before any shim that uses sync XHR.
+       telemetry.js must be first so __owTelemetry exists before sync-http. -->
+  <!-- ?v=N — static cache-buster. Bump N in index.html + starter.html
+       together whenever any client file changes and needs to reach the
+       browser past its HTTP cache. One global version for all client files. -->
+  <script src="/client/shims/telemetry.js?v=3"></script>
+  <script src="/client/shims/sync-http.js?v=3"></script>
+  <script src="/client/shims/path.js?v=3"></script>
+  <script src="/client/shims/url.js?v=3"></script>
+  <script src="/client/shims/os.js?v=3"></script>
+  <script src="/client/shims/btime.js?v=3"></script>
+  <script src="/client/shims/original-fs.js?v=3"></script>
+  <script src="/client/shims/electron.js?v=3"></script>
+
+  <!-- 2. Boot installs window.require, fetches bootstrap async, then
+       injects Obsidian's scripts dynamically once the cache is ready. -->
+  <script src="/client/boot.js?v=3"></script>
+
+  <!-- Obsidian scripts are NO LONGER listed here. boot.js injects them
+       dynamically after the async bootstrap fetch resolves, so the spinner
+       stays visible (and the main thread stays unblocked) during the fetch. -->
+
+</body>
+</html>

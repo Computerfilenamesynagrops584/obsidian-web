@@ -1,0 +1,33 @@
+name = "obsidian-web-demo"
+compatibility_date = "2025-01-01"
+main = "src/index.js"
+
+# Uncomment and set your own domain:
+# routes = [
+#   { pattern = "obsidian-web.example.com/*", zone_name = "example.com" }
+# ]
+
+[assets]
+directory = "./public"
+
+# ── Durable Objects ────────────────────────────────────────────────────────────
+[[durable_objects.bindings]]
+name = "VAULT"
+class_name = "VaultDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["VaultDO"]
+
+# ── Environment variables ──────────────────────────────────────────────────────
+[vars]
+DEMO_MODE = "true"
+RESET_INTERVAL_HOURS = "4"
+
+# ── R2 (personal use — uncomment + create bucket) ─────────────────────────────
+# [[r2_buckets]]
+# binding = "R2"
+# bucket_name = "obsidian-vault"
+
+# ── Secrets (wrangler secret put API_KEY) ─────────────────────────────────────
+# API_KEY — required when DEMO_MODE = "false"

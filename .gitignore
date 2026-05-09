@@ -1,0 +1,36 @@
+# Obsidian binary and extracted contents - downloaded on demand by setup script
+.cache/
+Obsidian.AppImage
+obsidian.asar
+obsidian.asar.gz
+squashfs-root/
+extracted/
+
+# Obsidian's own files - extracted from the AppImage at setup time, not source
+obsidian/
+obsidian.tmp-*/
+obsidian.prev-*/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Vault registry - contains local absolute paths, not portable
+data/
+
+# Test/dev artifacts
+test-vault/.obsidian/
+test-boot.py
+*.log
+
+# Internal development docs (contain personal infra references)
+docs/
+
+# Temporary build/debug artifacts
+.tmp/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
