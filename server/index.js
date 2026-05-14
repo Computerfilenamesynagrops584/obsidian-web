@@ -14,6 +14,7 @@ const http = require('http');
 const path = require('path');
 
 const config = require('./config');
+const systemPlugins = require('./system-plugins');
 const createFsRouter = require('./api/fs');
 const createElectronRouter = require('./api/electron');
 const createVaultsRouter = require('./api/vaults');
@@ -76,11 +77,23 @@ function createApp(appConfig = config) {
     sendHtmlWithCacheBust(res, path.join(appConfig.clientPath, 'starter.html'));
   });
 
+  // Mobile client entry point.
+  app.get('/mobile', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(appConfig.projectRoot, 'client-mobile', 'index.html'));
+  });
+
   // Static files - order matters: client/ first, then obsidian/.
   app.use('/client', express.static(appConfig.clientPath, {
     setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
   }));
+  app.use('/client-mobile', express.static(path.join(appConfig.projectRoot, 'client-mobile'), {
+    setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+  }));
   app.use('/obsidian', express.static(appConfig.obsidianPath, {
+    setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+  }));
+  app.use('/obsidian-mobile', express.static(path.join(appConfig.projectRoot, 'obsidian-mobile'), {
     setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
   }));
 
@@ -123,6 +136,10 @@ function createApp(appConfig = config) {
 }
 
 function startServer(appConfig = config) {
+  // Discover system plugins (repo-shipped plugins overlaid onto every vault)
+  // before any FS handler runs.
+  systemPlugins.init();
+
   const app = createApp(appConfig);
   const server = http.createServer(app);
   attachWatchServer(server, app.locals.vaultRegistry, appConfig.vaultPath);

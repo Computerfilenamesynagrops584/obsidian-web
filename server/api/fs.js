@@ -12,12 +12,37 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
+const {
+  tryGetSystemFilePath,
+  getSystemPluginIds,
+  mergeCommunityList,
+  stripCommunityList,
+  SYSTEM_PLUGINS_DIR,
+} = require('../system-plugins');
+
 // Imported lazily to avoid circular require — bootstrap.js exports serverCache.
 function invalidateBootstrapCache(vaultId) {
   try {
     const { serverCache } = require('./bootstrap');
     if (serverCache) serverCache.delete(vaultId);
   } catch (_) {}
+}
+
+// Async existence check used by the system-plugin overlay so we can give
+// the vault precedence over the repo copy.
+async function fileExists(absPath) {
+  try { await fsp.access(absPath); return true; } catch { return false; }
+}
+
+// Like fsp.readdir(target, { withFileTypes: true }) but returns [] when
+// the directory is missing (ENOENT/ENOTDIR). Other errors still throw.
+async function safeReaddir(absPath) {
+  try {
+    return await fsp.readdir(absPath, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
+    throw err;
+  }
 }
 
 // ── Write coalescing for rapid writes ──────────────────────────────────────
@@ -154,8 +179,23 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
 
   // Stat a single entry.
   router.get('/stat', async (req, res) => {
+    const relPath = req.query.path || '';
+    const isPluginsDir = relPath === '.obsidian/plugins' || relPath === '.obsidian/plugins/';
+
     try {
-      const target = resolveSafe(req, req.query.path || '');
+      const target = resolveSafe(req, relPath);
+
+      // System plugin overlay: if this is a system plugin path AND not in
+      // the vault, stat the repo copy instead.
+      const systemPath = tryGetSystemFilePath(relPath);
+      if (systemPath) {
+        const vaultHas = await fileExists(target);
+        if (!vaultHas) {
+          const stats = await fsp.stat(systemPath);
+          return res.json(serializeStats(stats));
+        }
+      }
+
       const pending = getPendingContent(target);
       const stats = await fsp.stat(target);
       // If there's a pending write, override mtime so the client sees fresh data.
@@ -165,19 +205,72 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
       }
       res.json(serializeStats(stats));
     } catch (err) {
+      // Synthesize a directory stat for .obsidian/plugins when the vault
+      // doesn't have it yet — otherwise Obsidian's plugin discovery aborts
+      // before it ever gets to readdir, and our system plugins stay hidden.
+      if ((err.code === 'ENOENT' || err.code === 'ENOTDIR')
+          && isPluginsDir
+          && getSystemPluginIds().length > 0) {
+        const now = Date.now();
+        return res.json({
+          isFile: false,
+          isDirectory: true,
+          isSymbolicLink: false,
+          size: 4096,
+          mtime: now,
+          ctime: now,
+          atime: now,
+          birthtime: now,
+          mode: 0o040755,
+        });
+      }
       handleError(res, err);
     }
   });
 
   // List directory contents (with stats so the client can avoid extra round-trips).
   router.get('/readdir', async (req, res) => {
+    const relPath = req.query.path || '';
+    const isPluginsDir = relPath === '.obsidian/plugins' || relPath === '.obsidian/plugins/';
+    // Match exactly .obsidian/plugins/<id> (no trailing path); optional trailing slash.
+    const inSysDirMatch = relPath.match(/^\.obsidian\/plugins\/([^/]+)\/?$/);
+    const inSysDir = inSysDirMatch && getSystemPluginIds().includes(inSysDirMatch[1]);
+
     try {
-      const target = resolveSafe(req, req.query.path || '');
+      const target = resolveSafe(req, relPath);
       // Helpful debug: log the resolved absolute path when readdir is called.
       // Useful for tracking down "readdir on a file" mysteries.
       if (process.env.OW_DEBUG) {
-        console.log('[readdir]', req.query.path, '->', target);
+        console.log('[readdir]', relPath, '->', target);
       }
+
+      // Inside a system plugin dir? If the vault doesn't have its own copy,
+      // list from the repo. (If the vault DOES override it, fall through to
+      // the normal readdir on the vault copy.)
+      if (inSysDir) {
+        const vaultEntries = await safeReaddir(target);
+        if (vaultEntries.length === 0) {
+          const repoDir = path.join(SYSTEM_PLUGINS_DIR, inSysDirMatch[1]);
+          const entries = await fsp.readdir(repoDir, { withFileTypes: true });
+          const result = await Promise.all(entries.map(async (entry) => {
+            const child = path.join(repoDir, entry.name);
+            let stats = null;
+            try {
+              const s = await fsp.stat(child);
+              stats = serializeStats(s);
+            } catch (_) { /* ignore */ }
+            return {
+              name: entry.name,
+              isFile: entry.isFile(),
+              isDirectory: entry.isDirectory(),
+              isSymbolicLink: entry.isSymbolicLink(),
+              stats,
+            };
+          }));
+          return res.json(result);
+        }
+      }
+
       const entries = await fsp.readdir(target, { withFileTypes: true });
       const result = await Promise.all(entries.map(async (entry) => {
         const child = path.join(target, entry.name);
@@ -196,8 +289,39 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
           stats,
         };
       }));
+
+      // If listing .obsidian/plugins, merge in system plugin directory entries
+      // for ids the vault doesn't already have.
+      if (isPluginsDir) {
+        for (const id of getSystemPluginIds()) {
+          if (!result.find((e) => e.name === id)) {
+            result.push({
+              name: id,
+              isFile: false,
+              isDirectory: true,
+              isSymbolicLink: false,
+              stats: null,
+            });
+          }
+        }
+      }
+
       res.json(result);
     } catch (err) {
+      // Synthesize a listing for .obsidian/plugins when the vault doesn't
+      // have that directory yet — Obsidian creates it lazily, but we want
+      // our system plugins to show up immediately.
+      if ((err.code === 'ENOENT' || err.code === 'ENOTDIR')
+          && isPluginsDir
+          && getSystemPluginIds().length > 0) {
+        return res.json(getSystemPluginIds().map((id) => ({
+          name: id,
+          isFile: false,
+          isDirectory: true,
+          isSymbolicLink: false,
+          stats: null,
+        })));
+      }
       handleError(res, err);
     }
   });
@@ -205,8 +329,53 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
   // Read a file (text or binary depending on ?encoding).
   router.get('/read', async (req, res) => {
     try {
-      const target = resolveSafe(req, req.query.path || '');
+      const relPath = req.query.path || '';
+      const target = resolveSafe(req, relPath);
       const encoding = req.query.encoding || null;
+
+      // Special case: community-plugins.json — merge system ids into the
+      // list Obsidian sees, regardless of whether the vault file exists.
+      if (relPath === '.obsidian/community-plugins.json') {
+        let list = [];
+        const pending = getPendingContent(target);
+        if (pending) {
+          // Pending write — parse the buffered content.
+          try {
+            const txt = typeof pending.data === 'string' ? pending.data : pending.data.toString('utf8');
+            const parsed = JSON.parse(txt);
+            if (Array.isArray(parsed)) list = parsed;
+          } catch (_) { /* malformed: start from empty */ }
+        } else {
+          try {
+            const txt = await fsp.readFile(target, 'utf8');
+            const parsed = JSON.parse(txt);
+            if (Array.isArray(parsed)) list = parsed;
+          } catch (err) {
+            if (err.code !== 'ENOENT') throw err;
+          }
+        }
+        const merged = mergeCommunityList(list);
+        if (encoding) {
+          return res.type('text/plain; charset=utf-8').send(JSON.stringify(merged));
+        }
+        return res.type('application/json').send(JSON.stringify(merged));
+      }
+
+      // System plugin overlay: if this is a system plugin file AND the
+      // vault doesn't have it, serve from <repo>/plugins/.
+      const systemPath = tryGetSystemFilePath(relPath);
+      if (systemPath) {
+        const vaultHas = await fileExists(target);
+        if (!vaultHas) {
+          if (encoding) {
+            const data = await fsp.readFile(systemPath, encoding);
+            return res.type('text/plain; charset=utf-8').send(data);
+          }
+          const data = await fsp.readFile(systemPath);
+          return res.type('application/octet-stream').send(data);
+        }
+      }
+
       // Serve from debounce buffer if a write is pending.
       const pending = getPendingContent(target);
       if (pending) {
@@ -236,7 +405,21 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
       const relPath = req.query.path || '';
       const target = resolveSafe(req, relPath);
       const encoding = req.query.encoding || null;
-      const data = encoding ? req.body.toString(encoding) : req.body;
+      let data = encoding ? req.body.toString(encoding) : req.body;
+
+      // For community-plugins.json: strip our system plugin ids before
+      // writing so we don't pollute the user's vault. Malformed JSON is
+      // passed through untouched.
+      if (relPath === '.obsidian/community-plugins.json' && encoding) {
+        try {
+          const parsed = JSON.parse(data);
+          if (Array.isArray(parsed)) {
+            const cleaned = stripCommunityList(parsed);
+            data = JSON.stringify(cleaned, null, 2);
+          }
+        } catch (_) { /* malformed JSON: pass through as-is */ }
+      }
+
       await fsp.mkdir(path.dirname(target), { recursive: true });
 
       // If this file was written recently, coalesce instead of hitting disk.

@@ -1,0 +1,231 @@
+/**
+ * boot.js — mobile client
+ *
+ * מקביל ל-client/boot.js של הddesktop:
+ *  1. בחירת vault + localStorage
+ *  2. חישוב Platform overrides (לפני שה-bundle רץ)
+ *  3. הגדרת window.require לפלאגינים
+ *  4. async: אימות vault → הזרקה דינמית של scripts → הסרת ספינר
+ *
+ * הפריסה (mobile/desktop) נקבעת ב-build-time patches על
+ * obsidian-mobile/app.js — ראה scripts/patch-obsidian-mobile.js.
+ * כאן רק קובעים את ה-overrides שה-IIFE של הbundle יקרא.
+ */
+
+// רשימת הscripts של Obsidian Mobile — מוזרקים דינמית אחרי האימות.
+// הlib חייבים לפני app.js (globals שנקראים ב-module level).
+const MOBILE_SCRIPTS = [
+  '/obsidian-mobile/lib/codemirror/codemirror.js',
+  '/obsidian-mobile/lib/codemirror/overlay.js',
+  '/obsidian-mobile/lib/codemirror/markdown.js',
+  '/obsidian-mobile/lib/codemirror/cm-addons.js',
+  '/obsidian-mobile/lib/codemirror/vim.js',
+  '/obsidian-mobile/lib/codemirror/meta.min.js',
+  '/obsidian-mobile/lib/moment.min.js',
+  '/obsidian-mobile/lib/pixi.min.js',
+  '/obsidian-mobile/lib/i18next.min.js',
+  '/obsidian-mobile/lib/scrypt.js',
+  '/obsidian-mobile/lib/turndown.js',
+  '/obsidian-mobile/enhance.js',
+  '/obsidian-mobile/i18n.js',
+  '/obsidian-mobile/app.js',
+];
+
+(function () {
+  'use strict';
+
+  if (typeof global === 'undefined') window.global = window;
+
+  // ── Vault selection ────────────────────────────────────────────────────────
+  var params  = new URLSearchParams(location.search);
+  var VAULT_ID = params.get('vault') || localStorage.getItem('obsidian-web:lastVaultId') || '';
+
+  if (!VAULT_ID && location.pathname !== '/starter') {
+    location.href = '/starter';
+    return;
+  }
+
+  if (VAULT_ID) {
+    localStorage.setItem('obsidian-web:lastVaultId', VAULT_ID);
+    localStorage.setItem('mobile-selected-vault', VAULT_ID);
+    localStorage.setItem('enable-plugin-' + VAULT_ID, 'true');
+  }
+
+  // ── Platform overrides — applied BEFORE app.js loads ──────────────────────
+  // הbundle עבר 3 patches (ראה scripts/patch-obsidian-mobile.js) שגורמים
+  // ל-IIFE שלו למזג את האובייקט הזה לתוך דגלי ה-Platform עם Object.assign,
+  // אחרי ברירות המחדל. מה שמוגדר כאן מנצח.
+  //
+  // המצב נשמר ב-localStorage תחת המפתח 'obsidian-web:layout-mode'.
+  function computeLayoutMode() {
+    var pref = localStorage.getItem('obsidian-web:layout-mode') || 'auto';
+    if (pref === 'mobile')  return { isMobile: true,  reason: 'user-pref-mobile' };
+    if (pref === 'desktop') return { isMobile: false, reason: 'user-pref-desktop' };
+    // 'auto' — viewport-based decision
+    var small = window.innerWidth < 900 || window.innerHeight < 600;
+    return { isMobile: small, reason: 'auto-' + (small ? 'mobile' : 'desktop') };
+  }
+  var layout = computeLayoutMode();
+  window.__owPlatformOverrides = { isMobile: layout.isMobile };
+  console.log('[obsidian-web] platform overrides:', layout);
+
+  // ── window.require לפלאגינים ───────────────────────────────────────────────
+  var modules = {
+    'path':          window.__owPath,
+    'url':           window.__owUrl,
+    'os':            window.__owOs,
+    'btime':         window.__owBtime,
+    'crypto':        makeCryptoShim(),
+    'node:crypto':   makeCryptoShim(),
+    'util':          makeUtilShim(),
+    'node:util':     makeUtilShim(),
+    'buffer':        { Buffer: window.Buffer },
+    'process':       window.process,
+    'child_process': makeChildProcessStub(),
+  };
+
+  function makeChildProcessStub() {
+    var ERR = new Error('[obsidian-web] child_process not available in web mode');
+    function noop() {}
+    function fakeProc() {
+      return { stdout:{on:noop,pipe:noop}, stderr:{on:noop,pipe:noop},
+               stdin:{write:noop,end:noop}, on:noop, once:noop, kill:noop, pid:0 };
+    }
+    return {
+      exec: function(cmd,opts,cb){ if(typeof opts==='function')cb=opts; if(typeof cb==='function')setTimeout(function(){cb(ERR,'','')},0); return fakeProc(); },
+      execSync: function(){ throw ERR; },
+      spawn: function(){ return fakeProc(); },
+      spawnSync: function(){ return {stdout:'',stderr:'',status:1,error:ERR}; },
+      execFile: function(f,a,opts,cb){ if(typeof opts==='function')cb=opts; if(typeof cb==='function')setTimeout(function(){cb(ERR,'','')},0); return fakeProc(); },
+      fork: function(){ return fakeProc(); },
+    };
+  }
+
+  function makeUtilShim() {
+    return {
+      promisify: function(fn){ return function(){ var args=[].slice.call(arguments); return new Promise(function(res,rej){ args.push(function(e,v){e?rej(e):res(v);}); fn.apply(this,args); }); }; },
+      callbackify: function(fn){ return function(){ var args=[].slice.call(arguments), cb=args.pop(); fn.apply(this,args).then(function(v){cb(null,v);},function(e){cb(e);}); }; },
+      inspect: function(o){ try{return JSON.stringify(o);}catch(_){return String(o);} },
+      inherits: function(ctor,sup){ ctor.super_=sup; Object.setPrototypeOf(ctor.prototype,sup.prototype); },
+    };
+  }
+
+  function makeCryptoShim() {
+    return {
+      randomBytes: function(n) {
+        var arr = new Uint8Array(n);
+        crypto.getRandomValues(arr);
+        arr.toString = function(enc) {
+          if (enc==='hex') { var s=''; for(var i=0;i<this.length;i++) s+=this[i].toString(16).padStart(2,'0'); return s; }
+          return Uint8Array.prototype.toString.call(this);
+        };
+        return arr;
+      },
+      createHash: function() {
+        var chunks = [];
+        return {
+          update: function(d){ chunks.push(typeof d==='string'?new TextEncoder().encode(d):d); return this; },
+          digest: function(enc){ console.warn('[obsidian-web] createHash().digest() sync — returning empty'); return enc==='hex'?'':new Uint8Array(0); },
+        };
+      },
+    };
+  }
+
+  var missing = (function(){
+    var hits = {};
+    return {
+      record: function(n){ hits[n]=(hits[n]||0)+1; },
+      summary: function(){ console.table(Object.entries(hits).map(function(e){return{module:e[0],count:e[1]};})); },
+    };
+  })();
+
+  window.require = function(name) {
+    if (Object.prototype.hasOwnProperty.call(modules, name)) return modules[name];
+    missing.record(name);
+    return undefined;
+  };
+  window.__owMissing = missing;
+
+  window.process = window.process || {
+    platform: 'linux', arch: 'x64',
+    versions: { node: '0.0.0' }, env: {},
+    cwd: function(){ return '/'; },
+    nextTick: function(fn){ return Promise.resolve().then(fn); },
+  };
+
+  if (!window.Buffer) {
+    window.Buffer = {
+      from: function(data, enc) {
+        if (typeof data==='string') {
+          if (enc==='base64') { var b=atob(data),a=new Uint8Array(b.length); for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i); return a; }
+          return new TextEncoder().encode(data);
+        }
+        return new Uint8Array(data);
+      },
+      isBuffer: function(x){ return x instanceof Uint8Array; },
+      alloc: function(n){ return new Uint8Array(n); },
+    };
+  }
+
+  console.log('[obsidian-web] mobile boot: require + shims installed, vault=' + VAULT_ID);
+
+  // ── אימות vault + הזרקה דינמית של scripts ─────────────────────────────────
+  if (!VAULT_ID || location.pathname === '/starter') return;
+
+  var statusEl = document.getElementById('ow-status');
+  function setStatus(text) {
+    if (statusEl) statusEl.textContent = text;
+  }
+
+  setStatus('Verifying vault...');
+
+  // אמת שה-vault קיים על השרת (stat על ה-root)
+  fetch('/api/fs/stat?vault=' + encodeURIComponent(VAULT_ID) + '&path=')
+    .then(function(res) {
+      if (!res.ok) throw new Error('Vault not found (HTTP ' + res.status + ')');
+      return res.json();
+    })
+    .then(function(stat) {
+      if (!stat || (!stat.isDirectory && stat.type !== 'directory')) throw new Error('Vault path is not a directory');
+
+      setStatus('Loading Obsidian mobile...');
+      console.log('[obsidian-web] vault ok, injecting mobile scripts');
+
+      // הזרקה דינמית — browser מוריד במקביל, מריץ לפי סדר (async=false)
+      var loaded = 0;
+      for (var i = 0; i < MOBILE_SCRIPTS.length; i++) {
+        (function(src) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.async = false;
+          s.onload = function() {
+            loaded++;
+            setStatus('Loading Obsidian mobile (' + loaded + '/' + MOBILE_SCRIPTS.length + ')');
+          };
+          s.onerror = function() {
+            console.error('[obsidian-web] failed to load: ' + src);
+            setStatus('Error loading ' + src.split('/').pop());
+          };
+          document.head.appendChild(s);
+        })(MOBILE_SCRIPTS[i]);
+      }
+
+      // הסרת ספינר כשה-workspace מוכן
+      var overlay = document.getElementById('ow-loading');
+      if (overlay) {
+        var spinnerObs = new MutationObserver(function() {
+          if (document.querySelector('.workspace')) {
+            overlay.remove();
+            spinnerObs.disconnect();
+          }
+        });
+        spinnerObs.observe(document.body, { childList: true, subtree: true });
+      }
+    })
+    .catch(function(err) {
+      console.warn('[obsidian-web] vault check failed:', err.message);
+      setStatus('Error: ' + err.message);
+      localStorage.removeItem('obsidian-web:lastVaultId');
+      setTimeout(function(){ location.href = '/starter'; }, 2000);
+    });
+}());

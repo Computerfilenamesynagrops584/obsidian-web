@@ -11,6 +11,9 @@ obsidian/
 obsidian.tmp-*/
 obsidian.prev-*/
 
+# Obsidian mobile bundle - extracted from the Android APK by update-obsidian-mobile.js
+obsidian-mobile/
+
 # Node
 node_modules/
 npm-debug.log*
@@ -28,6 +31,7 @@ docs/
 
 # Temporary build/debug artifacts
 .tmp/
+.codenomad/
 
 # Editor / OS
 .DS_Store

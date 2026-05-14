@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+  <title>Obsidian Web</title>
+  <link href="/obsidian-mobile/app.css" type="text/css" rel="stylesheet"/>
+  <style>
+    #ow-loading {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 16px;
+      background: var(--background-primary, #1e1e1e); z-index: 99999;
+    }
+    #ow-loading .ow-spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(255,255,255,0.12);
+      border-top-color: rgba(255,255,255,0.6);
+      border-radius: 50%; animation: ow-spin 0.7s linear infinite;
+    }
+    #ow-loading .ow-status {
+      color: rgba(255,255,255,0.5);
+      font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    @keyframes ow-spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="theme-dark">
+
+  <div id="ow-loading">
+    <div class="ow-spinner"></div>
+    <div class="ow-status" id="ow-status"></div>
+  </div>
+
+  <!-- 1. Capacitor shim — חייב לפני native-bridge.js כדי שandroidBridge יהיה
+       מוגדר כשהbridge מאתחל את הplatform. -->
+  <script src="/client-mobile/shims/capacitor-shim.js?v=1"></script>
+
+  <!-- 2. Capacitor native bridge (מה-APK). -->
+  <script src="/obsidian-mobile/native-bridge.js?v=1"></script>
+
+  <!-- 3. שימי עזר לפלאגינים שמשתמשים ב-require(). -->
+  <script src="/client-mobile/shims/path.js?v=1"></script>
+  <script src="/client-mobile/shims/url.js?v=1"></script>
+  <script src="/client-mobile/shims/os.js?v=1"></script>
+  <script src="/client-mobile/shims/btime.js?v=1"></script>
+
+  <!-- 4. Boot: vault selection, window.require, desktop cleanup.
+       Obsidian's scripts (i18next, enhance, i18n, app.js) are injected
+       DYNAMICALLY by boot.js after vault verification — same mechanism as
+       the desktop client. This keeps the spinner visible and lets us report
+       loading progress. -->
+  <script src="/client-mobile/boot.js?v=1"></script>
+
+</body>
+</html>

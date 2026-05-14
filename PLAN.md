@@ -51,6 +51,13 @@ Vault
   - Warm-up runs at server start so the first browser request is always a cache HIT.
 - Can be deployed to any Linux box behind a reverse proxy. The app itself
   has no auth — use Cloudflare Access, HTTP Basic, or similar.
+- **System plugin injection.** Plugins shipped under `<repo>/plugins/` are
+  overlaid onto every vault by `server/system-plugins.js` + `server/api/fs.js`:
+  reads/stats fall back to the repo copy when the vault doesn't have one;
+  `community-plugins.json` is merged on read and stripped on write so the
+  user's vault stays clean. The first such plugin is **`obsidian-web-layout`**
+  — a ribbon icon + commands to switch between `auto/mobile/desktop` layouts.
+  Users get it automatically when they open any vault on obsidian-web.
 
 ### Known issues / loose ends
 
@@ -132,9 +139,194 @@ See `docs/investigations.md` for solved issues and debugging notes.
 - **Obsidian Sync.** Will not work - it's a paid Electron-only service.
   The web wrapper effectively replaces it: every device uses the same
   server-side vault.
-- **Mobile.** PWA + responsive layout could work; Obsidian's mobile
-  build path uses Capacitor which might offer cleaner targeting. Not
-  in scope yet.
+- **Mobile.** Implemented as `/mobile` — a parallel runtime that loads
+  the mobile bundle (`obsidian-mobile/app.js`) with a `CapacitorAdapter`
+  shim instead of the desktop FileSystemAdapter. Three build-time
+  patches on the bundle (applied by `scripts/update-obsidian-mobile.js`
+  via `scripts/patch-obsidian-mobile.js`) expose the Platform object as
+  `window.__owPlatform` and let `client-mobile/boot.js` choose the
+  layout via `window.__owPlatformOverrides` based on
+  `localStorage['obsidian-web:layout-mode']` (auto / mobile / desktop).
+  `isMobileApp` stays `true` so the Capacitor adapter is always active;
+  only the `isMobile` flag (which controls UI layout) is toggled.
+  See `docs/walkthrough.md` (2026-05-11) and `docs/investigations.md`
+  ("Build-time patch approach (implemented)").
+
+---
+
+## Integration Plan: obsidian-livesync
+
+> Added: 2026-05-09
+
+### Background
+
+[obsidian-livesync](https://github.com/vrtmrz/obsidian-livesync) is a
+community plugin that syncs Obsidian vaults via CouchDB or object storage
+(MinIO, S3, R2, Cloudflare R2). It also supports experimental WebRTC P2P sync.
+The goal: allow obsidian-web to participate in a livesync network, so desktop
+Obsidian and obsidian-web stay in sync through the same CouchDB backend.
+
+### Target architecture
+
+```
+Desktop Obsidian + LiveSync ─────┐
+Mobile Obsidian  + LiveSync ─────┤──► CouchDB ◄──── LiveSync plugin
+                                 │                   (runs inside obsidian-web)
+                                 │                         │
+                              changes                  reads/writes
+                              propagated                    ↓
+                                                   server vault on disk
+                                                   (chokidar → WS → all browsers)
+```
+
+All browsers open on obsidian-web share the same vault on disk. LiveSync
+running inside one of those browser sessions keeps that vault in sync with
+the CouchDB backend.
+
+### Feasibility assessment
+
+| Layer | Status | Notes |
+|---|---|---|
+| Plugin loading | ✅ works | bootstrap serves `.obsidian/plugins/` including `main.js` |
+| File read/write | ✅ works | vault API → fs shim → `/api/fs/*` → disk |
+| Plugin settings | ✅ works | `data.json` stored and served normally |
+| PouchDB (local cache) | ✅ works | uses IndexedDB, fully available in browser |
+| `requestUrl` → CouchDB | ❌ blocked | CouchDB host not in proxy allowlist |
+| `_changes` feed (WS/SSE) | ⚠️ needs testing | may bypass proxy if LiveSync opens WebSocket directly |
+| `window.crypto` | ⚠️ partial | `createHash` returns empty buffers (issue D in Known Issues) |
+| `main.js` size > 500KB | ⚠️ minor | loaded separately, not in bootstrap; ~200ms extra on first load |
+
+### Critical blocker: proxy allowlist
+
+`requestUrl()` calls from plugins go through `server/api/proxy.js`, which
+enforces a hard-coded allowlist of Obsidian-owned domains. A CouchDB host
+(fly.io, self-hosted, IBM Cloudant, Cloudflare R2) is not in the list and
+gets a 403.
+
+**Fix:** add a `PROXY_ALLOWED_HOSTS` environment variable that extends the
+allowlist at runtime.
+
+### Crypto stub (issue D)
+
+LiveSync uses `createHash('md5')` and `createHash('sha256')` for chunk
+deduplication and integrity checks. The current stub returns empty buffers,
+which will silently corrupt LiveSync's checksums.
+
+**Fix:** implement `createHash` using the Web Crypto API (`crypto.subtle.digest`).
+Note: `subtle.digest` is async, so the sync `createHash().update().digest()`
+interface needs a sync workaround (pre-computed via `TextEncoder` or a
+WASM-based MD5/SHA implementation).
+
+### Implementation tasks
+
+#### Task 1 — Configurable proxy allowlist (server)
+
+File: `server/config.js`
+```js
+// NEW
+export const PROXY_EXTRA_HOSTS = (process.env.PROXY_ALLOWED_HOSTS || '')
+    .split(',').map(h => h.trim()).filter(Boolean);
+```
+
+File: `server/api/proxy.js` — extend `isAllowed()`:
+```js
+import { PROXY_EXTRA_HOSTS } from '../config.js';
+
+// after existing allowlist checks:
+if (PROXY_EXTRA_HOSTS.some(h => host === h || host.endsWith('.' + h))) return true;
+```
+
+Usage:
+```bash
+PROXY_ALLOWED_HOSTS=my-db.fly.dev node server/index.js
+# or multiple:
+PROXY_ALLOWED_HOSTS=my-db.fly.dev,my-backup-db.example.com node server/index.js
+```
+
+#### Task 2 — Fix `createHash` stub (client)
+
+File: `client/boot.js` — replace the `crypto` module entry.
+
+Option A (pure-JS, synchronous, small):
+- Bundle a ~3KB synchronous MD5 + SHA-256 implementation (e.g. `spark-md5` +
+  `sha.js`) and expose them through the `createHash` interface.
+- Keeps everything synchronous, no API changes needed.
+
+Option B (Web Crypto, async-compatible):
+- Expose `createHash` as a sync wrapper that computes hashes using a
+  pre-allocated WASM module.
+- More complex but avoids shipping JS hash code.
+
+Recommended: **Option A**. LiveSync only uses MD5/SHA-256. `spark-md5` is
+~4KB gzipped; `sha.js` ~5KB gzipped. Both are synchronous.
+
+The hash API to implement:
+```js
+crypto.createHash('md5')   // or 'sha256', 'sha1'
+  .update(data)            // Buffer | string
+  .digest('hex')           // → hex string
+  .digest('base64')        // → base64 string
+  .digest()                // → Buffer
+```
+
+#### Task 3 — Verify `_changes` feed connectivity
+
+LiveSync subscribes to CouchDB's `_changes?feed=longpoll` (or `eventsource`).
+These requests also go through `requestUrl`, so Task 1 covers them too.
+
+If LiveSync uses `EventSource` directly (not via `requestUrl`), it bypasses
+the proxy. Test with DevTools network tab after enabling the plugin.
+
+#### Task 4 — CouchDB CORS configuration
+
+The CouchDB server must allow requests from the obsidian-web origin.
+Add to `local.ini`:
+```ini
+[cors]
+enable = true
+origins = https://your-obsidian-web-host.example.com
+headers = Authorization,Content-Type
+credentials = true
+```
+
+For fly.io CouchDB deployments, this is set via `flyctl ssh console` or
+the CouchDB admin panel (`/_utils`).
+
+#### Task 5 — Manual end-to-end test
+
+After Tasks 1–4:
+1. Install LiveSync plugin in `test-vault/.obsidian/plugins/obsidian-livesync/`.
+2. Start server with `PROXY_ALLOWED_HOSTS=<couchdb-host>`.
+3. Open obsidian-web in browser.
+4. Go to LiveSync settings → configure CouchDB URI.
+5. Verify: initial replication completes, status bar shows ⚡.
+6. Edit a note on desktop Obsidian → verify it appears in obsidian-web within seconds.
+7. Edit a note in obsidian-web → verify it appears on desktop Obsidian.
+
+#### Task 6 — Documentation
+
+Add a `docs/livesync.md` guide covering:
+- Prerequisites (CouchDB already set up with another device)
+- Installing the plugin in the vault directory on the server
+- Setting `PROXY_ALLOWED_HOSTS`
+- CouchDB CORS config
+- Known limitations (IndexedDB is per-browser, `createHash` alternative)
+
+### Known limitations after integration
+
+- **IndexedDB is per-browser session.** LiveSync's PouchDB cache is not
+  shared between browsers accessing the same obsidian-web instance. Each
+  browser will do its own initial replication from CouchDB. Subsequent syncs
+  are incremental and fast.
+- **No offline write buffering.** If the CouchDB server is unreachable,
+  LiveSync will queue changes locally in IndexedDB (standard LiveSync
+  behaviour). obsidian-web's own disk writes still work regardless.
+- **Cloudflare Workers deployment.** The CF variant uses Durable Objects
+  for storage; CouchDB sync through the proxy is not applicable there.
+  That deployment is read-only / demo mode; LiveSync is not a target for it.
+- **Multiple obsidian-web sessions running LiveSync simultaneously** is
+  functionally safe (each syncs independently) but wastes bandwidth. Consider
+  documenting that only one session needs LiveSync active at a time.
 
 ## Files to know about
 
@@ -158,5 +350,9 @@ See `docs/investigations.md` for solved issues and debugging notes.
 | `client/shims/url.js` | pathToFileURL, fileURLToPath |
 | `client/shims/os.js` | tmpdir, hostname, etc. |
 | `client/shims/btime.js` | birthtime stub (no-op) |
-| `obsidian/` | extracted, untouched |
+| `obsidian/` | extracted desktop bundle, untouched |
+| `obsidian-mobile/` | extracted mobile bundle, patched at build time (Platform overrides) |
+| `client-mobile/` | mobile-runtime client (boot.js + capacitor shim + index.html for `/mobile`) |
+| `scripts/update-obsidian-mobile.js` | downloads APK, extracts mobile bundle, applies patches |
+| `scripts/patch-obsidian-mobile.js` | 3 regex patches exposing `__owPlatform` + `__owPlatformOverrides` |
 | `test-vault/` | scratch vault for development |
